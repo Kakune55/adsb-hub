@@ -1,0 +1,17 @@
+[Unit]
+Description=ADS-B Hub collector
+After=network-online.target readsb.service
+Wants=network-online.target readsb.service
+ConditionPathExists=/root/ads-b-hub/collector.env
+
+[Service]
+WorkingDirectory=/root/ads-b-hub
+Environment=ADSB_QUEUE_PATH=/root/ads-b-hub/data/queue.sqlite
+EnvironmentFile=/root/ads-b-hub/collector.env
+ExecStart=/root/ads-b-hub/adsb collector
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

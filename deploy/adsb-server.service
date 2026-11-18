@@ -1,0 +1,15 @@
+[Unit]
+Description=ADS-B Hub web server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/ads-b-hub
+EnvironmentFile=/root/ads-b-hub/server.env
+ExecStart=/root/ads-b-hub/adsb server
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
