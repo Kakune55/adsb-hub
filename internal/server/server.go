@@ -27,6 +27,7 @@ type api struct {
 	db      *pgxpool.Pool
 	tokens  map[string]string
 	liveAge time.Duration
+	streams *liveStreams
 }
 
 func Run(ctx context.Context, cfg Config, assets fs.FS) error {
@@ -40,16 +41,23 @@ func Run(ctx context.Context, cfg Config, assets fs.FS) error {
 	if err := initDB(startCtx, db, cfg.Receivers); err != nil {
 		return fmt.Errorf("initialize PostgreSQL: %w", err)
 	}
-	a := api{db: db, tokens: map[string]string{}, liveAge: cfg.LiveMaxAge}
+	a := api{db: db, tokens: map[string]string{}, liveAge: cfg.LiveMaxAge, streams: &liveStreams{}}
 	for _, station := range cfg.Receivers {
 		a.tokens[station.Token] = station.ID
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/ingest", a.ingest)
 	mux.HandleFunc("GET /api/v1/live", a.live)
+	mux.HandleFunc("GET /api/v1/live/stream", func(w http.ResponseWriter, r *http.Request) {
+		a.streams.serve(w, r, ctx.Done(), a.liveSnapshot)
+	})
 	mux.HandleFunc("GET /api/v1/track", a.track)
 	mux.HandleFunc("GET /api/v1/trails", a.trails)
 	mux.HandleFunc("GET /api/v1/aircraft", a.aircraft)
+	mux.HandleFunc("GET /api/v1/aircraft/info", newAircraftDirectory("https://api.adsbdb.com/v0/aircraft/").serve)
+	mux.HandleFunc("GET /api/v1/airports", airportDirectory())
+	mux.HandleFunc("GET /api/v1/airports/details", airportDetails())
+	mux.HandleFunc("GET /api/v1/airports/weather", airportWeather("https://aviationweather.gov/api/data/"))
 	mux.HandleFunc("GET /api/v1/receivers", a.receivers)
 	mux.HandleFunc("GET /api/", http.NotFound)
 	mux.Handle("GET /", http.FileServerFS(assets))
@@ -104,10 +112,12 @@ func (a api) ingest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := save(r.Context(), a.db, id, records); err != nil {
+	points, err := save(r.Context(), a.db, id, records)
+	if err != nil {
 		dbError(w, err)
 		return
 	}
+	a.streams.publish(id, points)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -123,25 +133,26 @@ func validEvent(record event.Event) bool {
 }
 
 func (a api) live(w http.ResponseWriter, r *http.Request) {
-	now := time.Now().UTC()
-	args := []any{now.Add(-a.liveAge), now}
-	query := `SELECT DISTINCT ON (receiver_id, hex) ` + pointColumns + ` FROM position_points
-		WHERE position_at > $1 AND position_at <= $2`
-	if id := r.URL.Query().Get("receiver_id"); id != "" {
-		query += ` AND receiver_id = $3`
-		args = append(args, id)
-	}
-	query += ` ORDER BY receiver_id, hex, position_at DESC, ingested_at DESC, event_id DESC`
-	points, err := queryPoints(r.Context(), a.db, query, args...)
+	snapshot, err := a.liveSnapshot(r.Context(), r.URL.Query().Get("receiver_id"))
 	if err != nil {
 		dbError(w, err)
 		return
 	}
-	writeJSON(w, struct {
-		Points    []Point   `json:"points"`
-		ServerAt  time.Time `json:"server_time"`
-		MaxAgeSec int       `json:"max_age_seconds"`
-	}{points, now, int(a.liveAge / time.Second)})
+	writeJSON(w, snapshot)
+}
+
+func (a api) liveSnapshot(ctx context.Context, id string) (liveFrame, error) {
+	now := time.Now().UTC()
+	args := []any{now.Add(-a.liveAge), now}
+	query := `SELECT DISTINCT ON (receiver_id, hex) ` + pointColumns + ` FROM position_points
+		WHERE position_at > $1 AND position_at <= $2`
+	if id != "" {
+		query += ` AND receiver_id = $3`
+		args = append(args, id)
+	}
+	query += ` ORDER BY receiver_id, hex, position_at DESC, ingested_at DESC, event_id COLLATE "C" DESC`
+	points, err := queryPoints(ctx, a.db, query, args...)
+	return liveFrame{Points: points, ServerAt: now, MaxAgeSec: int(a.liveAge / time.Second)}, err
 }
 
 func (a api) track(w http.ResponseWriter, r *http.Request) {

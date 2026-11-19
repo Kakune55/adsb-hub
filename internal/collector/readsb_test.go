@@ -23,8 +23,20 @@ func TestPositionTimeAndGround(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !p.ApproximateAt || !p.At.Equal(collected) || p.AltBaro == nil || *p.AltBaro != 0 || p.OnGround != nil {
+	if !p.ApproximateAt || !p.At.Equal(collected) || p.AltBaro == nil || *p.AltBaro != 0 || p.OnGround != nil || p.Telemetry != nil {
 		t.Fatalf("unexpected fallback position: %+v", p)
+	}
+}
+
+func TestReadOptionalTelemetry(t *testing.T) {
+	p, err := readPosition([]byte(`{"hex":"7808a7","lat":25,"lon":110,"squawk":"0240","type":"adsb_icao","baro_rate":0,"ias":293,"rssi":-14.9,"nav_modes":["autopilot"],"t":"A321"}`), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := p.Telemetry
+	if s == nil || s.Squawk == nil || *s.Squawk != "0240" || s.BaroRate == nil || *s.BaroRate != 0 ||
+		s.IAS == nil || *s.IAS != 293 || s.RSSI == nil || *s.RSSI != -14.9 || len(s.NavModes) != 1 || s.TypeCode == nil || *s.TypeCode != "A321" || s.TAS != nil {
+		t.Fatalf("unexpected telemetry: %+v", s)
 	}
 }
 

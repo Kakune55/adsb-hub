@@ -1,5 +1,5 @@
 const stops = [[0, 25], [4000, 53], [10000, 108], [20000, 174], [30000, 228], [40000, 285]];
-const color = (hue) => `hsl(${hue} 90% 59%)`;
+const color = (hue) => `hsl(${hue}, 90%, 59%)`;
 
 export function altitudeColor(feet) {
   if (!Number.isFinite(feet)) return '#a9b4c2';

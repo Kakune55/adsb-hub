@@ -17,6 +17,7 @@ func unixSeconds(value float64) time.Time {
 
 func readPosition(line []byte, collectedAt time.Time) (*event.Position, error) {
 	var wire struct {
+		*event.Telemetry
 		Hex     string          `json:"hex"`
 		Flight  *string         `json:"flight"`
 		Lat     *float64        `json:"lat"`
@@ -39,7 +40,7 @@ func readPosition(line []byte, collectedAt time.Time) (*event.Position, error) {
 	}
 	position := &event.Position{
 		Hex: wire.Hex, Lat: *wire.Lat, Lon: *wire.Lon, OnGround: wire.Ground,
-		GroundSpeed: wire.GS, Track: wire.Track, At: collectedAt, ApproximateAt: true,
+		GroundSpeed: wire.GS, Track: wire.Track, At: collectedAt, ApproximateAt: true, Telemetry: wire.Telemetry,
 	}
 	if wire.Flight != nil {
 		if flight := strings.TrimSpace(*wire.Flight); flight != "" {

@@ -23,6 +23,7 @@ type Point struct {
 	ReceiverID string `json:"receiver_id"`
 	event.Position
 	IngestedAt time.Time `json:"ingested_at"`
+	eventID    string
 }
 
 type receiver struct {
@@ -51,14 +52,15 @@ func initDB(ctx context.Context, db *pgxpool.Pool, stations []ReceiverConfig) er
 	return tx.Commit(ctx)
 }
 
-func save(ctx context.Context, db *pgxpool.Pool, id string, records []event.Event) error {
+func save(ctx context.Context, db *pgxpool.Pool, id string, records []event.Event) ([]Point, error) {
 	batch := &pgx.Batch{}
 	for _, record := range records {
 		if p := record.Position; p != nil {
 			batch.Queue(`INSERT INTO position_points
-				(receiver_id, event_id, hex, flight, lat, lon, alt_baro, on_ground, gs, track, position_at, position_at_approximate)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (receiver_id, event_id) DO NOTHING`,
-				id, record.ID, p.Hex, p.Flight, p.Lat, p.Lon, p.AltBaro, p.OnGround, p.GroundSpeed, p.Track, p.At, p.ApproximateAt)
+				(receiver_id, event_id, hex, flight, lat, lon, alt_baro, on_ground, gs, track, position_at, position_at_approximate, telemetry)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (receiver_id, event_id) DO NOTHING
+				RETURNING position_at, ingested_at`,
+				id, record.ID, p.Hex, p.Flight, p.Lat, p.Lon, p.AltBaro, p.OnGround, p.GroundSpeed, p.Track, p.At, p.ApproximateAt, p.Telemetry)
 		} else {
 			s := record.Sample
 			batch.Queue(`INSERT INTO receiver_status
@@ -71,17 +73,37 @@ func save(ctx context.Context, db *pgxpool.Pool, id string, records []event.Even
 	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
-		return err
+	results := tx.SendBatch(ctx, batch)
+	defer results.Close()
+	var points []Point
+	for _, record := range records {
+		if p := record.Position; p != nil {
+			point := Point{ReceiverID: id, Position: *p, eventID: record.ID}
+			if err := results.QueryRow().Scan(&point.At, &point.IngestedAt); err == pgx.ErrNoRows {
+				continue // A replay did not insert another point.
+			} else if err != nil {
+				return nil, err
+			}
+			point.At, point.IngestedAt = point.At.UTC(), point.IngestedAt.UTC()
+			points = append(points, point)
+		} else if _, err := results.Exec(); err != nil {
+			return nil, err
+		}
 	}
-	return tx.Commit(ctx)
+	if err := results.Close(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return points, nil
 }
 
 const pointColumns = `receiver_id, hex, flight, lat, lon, alt_baro, on_ground, gs, track,
-	position_at, position_at_approximate, ingested_at`
+	position_at, position_at_approximate, ingested_at, event_id, telemetry`
 
 func queryPoints(ctx context.Context, db *pgxpool.Pool, query string, args ...any) ([]Point, error) {
 	rows, err := db.Query(ctx, query, args...)
@@ -93,7 +115,7 @@ func queryPoints(ctx context.Context, db *pgxpool.Pool, query string, args ...an
 	for rows.Next() {
 		var p Point
 		if err := rows.Scan(&p.ReceiverID, &p.Hex, &p.Flight, &p.Lat, &p.Lon, &p.AltBaro, &p.OnGround,
-			&p.GroundSpeed, &p.Track, &p.At, &p.ApproximateAt, &p.IngestedAt); err != nil {
+			&p.GroundSpeed, &p.Track, &p.At, &p.ApproximateAt, &p.IngestedAt, &p.eventID, &p.Telemetry); err != nil {
 			return nil, err
 		}
 		p.At, p.IngestedAt = p.At.UTC(), p.IngestedAt.UTC()

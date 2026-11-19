@@ -46,3 +46,4 @@ CREATE INDEX IF NOT EXISTS position_points_track_idx
     ON position_points (receiver_id, hex, position_at);
 CREATE INDEX IF NOT EXISTS position_points_live_idx
     ON position_points (position_at);
+ALTER TABLE position_points ADD COLUMN IF NOT EXISTS telemetry jsonb;
