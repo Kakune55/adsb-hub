@@ -182,6 +182,8 @@ function addRadarLayers(map, sources, icon, tower) {
     paint: { 'circle-color': '#509ce8', 'circle-stroke-color': '#cce7ff', 'circle-stroke-width': 2, 'circle-radius': 5 } });
   map.addLayer({ id: 'last-known', source: 'last-known', type: 'circle',
     paint: { 'circle-color': '#182638', 'circle-stroke-color': '#ffc875', 'circle-stroke-width': 2, 'circle-radius': 7 } });
+  map.addLayer({ id: 'chart-point', source: 'chart-point', type: 'circle',
+    paint: { 'circle-color': '#ffffff', 'circle-stroke-color': '#f0bf72', 'circle-stroke-width': 2, 'circle-radius': 5 } });
   map.addImage('airport-tower', tower, { pixelRatio: 2 });
   for (const [id, minzoom, filter] of [
     ['large-airports', 3, ['==', ['get', 'kind'], 'large_airport']],
@@ -205,12 +207,12 @@ function addRadarLayers(map, sources, icon, tower) {
       'icon-halo-color': ['case', ['==', ['get', 'selected'], 1], '#f2f5fb', '#07111d'] } });
 }
 
-export default function MapView({ station, points, track, selectedHex, lastKnown, pan, historyTracks, onSelect, followKey, onFollow, onStopFollowing, referenceRoute, airports, onAirportSelect, airportRunways, selectedAirport, airportMETAR }) {
+export default function MapView({ station, points, track, selectedHex, lastKnown, pan, historyTracks, onSelect, followKey, onFollow, onStopFollowing, referenceRoute, airports, onAirportSelect, airportRunways, selectedAirport, airportMETAR, onViewport, chartPoint, replaying }) {
   const element = useRef(null);
   const windCanvas = useRef(null);
   const radar = useRef(null);
   const current = useRef(null);
-  current.current = { historyTracks, onSelect, followKey, onFollow, onStopFollowing, onAirportSelect };
+  current.current = { historyTracks, onSelect, followKey, onFollow, onStopFollowing, onAirportSelect, onViewport, replaying };
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -242,7 +244,7 @@ export default function MapView({ station, points, track, selectedHex, lastKnown
     map.addControl({ onAdd: () => select, onRemove: () => select.remove() }, 'bottom-left');
     map.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-left');
 
-    const sources = Object.fromEntries(['planes', 'history', 'track', 'receiver', 'last-known', 'airports', 'route-airports', 'airport-runways'].map((id) => [id, collection()]));
+    const sources = Object.fromEntries(['planes', 'history', 'track', 'receiver', 'last-known', 'chart-point', 'airports', 'route-airports', 'airport-runways'].map((id) => [id, collection()]));
     const icon = aircraftImage();
     const tower = towerImage();
     const airportByKey = new Map();
@@ -313,12 +315,17 @@ export default function MapView({ station, points, track, selectedHex, lastKnown
       if (!map.getLayer('planes')) return;
       const hit = map.queryRenderedFeatures(hitBox(event.point), { layers: ['planes'] })[0];
       const plane = hit && planes.get(hit.properties.key)?.point;
-      if (!plane) return;
+      if (!plane || current.current.replaying) return;
       event.preventDefault();
       current.current.onFollow(plane);
     });
     map.on('dragstart', () => current.current.onStopFollowing());
-    map.on('moveend', () => { if (current.current.followKey) redraw(); });
+    function reportViewport() {
+      const bounds = map.getBounds();
+      current.current.onViewport?.({ west: bounds.getWest(), east: bounds.getEast(), south: bounds.getSouth(), north: bounds.getNorth() });
+    }
+    map.on('moveend', () => { reportViewport(); if (current.current.followKey) redraw(); });
+    reportViewport();
     radar.current = { map, update, planes, moving, redraw, reducedMotion, airportByKey, centered: false };
     return () => {
       radar.current = null;
@@ -359,7 +366,7 @@ export default function MapView({ station, points, track, selectedHex, lastKnown
         const [lng, lat] = entry.coord;
         const to = { lng: nearestLongitude(lng, point.lon), lat: point.lat };
         const gap = Date.parse(point.position_at) - Date.parse(entry.point.position_at);
-        const duration = reducedMotion.matches ? 0 : motionDuration(gap, new LngLat(lng, lat).distanceTo(to));
+        const duration = reducedMotion.matches || point.historical || entry.point.historical ? 0 : motionDuration(gap, new LngLat(lng, lat).distanceTo(to));
         if (duration) {
           entry.motion = { from: { lng, lat }, to, start: performance.now(), duration };
           moving.add(entry);
@@ -387,6 +394,9 @@ export default function MapView({ station, points, track, selectedHex, lastKnown
 
   useEffect(() => { radar.current?.update('track', trailData([{ segments: [track] }])); }, [track]);
   useEffect(() => { radar.current?.update('history', trailData(historyTracks)); }, [historyTracks]);
+  useEffect(() => {
+    radar.current?.update('chart-point', collection(chartPoint ? [feature('Point', position(chartPoint))] : []));
+  }, [chartPoint]);
   useEffect(() => {
     const ranges = new Map(parseMETAR(airportMETAR?.rawOb).rvr.map((range) => [range.runway, formatRVR(range)]));
     const labels = (airportRunways ?? []).flatMap(({ start, end, low, high, closed }) => {

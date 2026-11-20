@@ -37,7 +37,9 @@ func airportDetails() http.HandlerFunc {
 		if data == nil {
 			data = json.RawMessage(`{"runways":[],"frequencies":[]}`)
 		}
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		if w.Header().Get("Cache-Control") == "" {
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_, _ = w.Write(data)
 	}
@@ -92,7 +94,9 @@ func airportWeather(baseURL string) http.HandlerFunc {
 			}
 			break
 		}
-		w.Header().Set("Cache-Control", "public, max-age=240")
+		if w.Header().Get("Cache-Control") == "" {
+			w.Header().Set("Cache-Control", "private, max-age=240")
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(latest)
 	}

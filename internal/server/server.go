@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -18,9 +19,11 @@ import (
 )
 
 type Config struct {
-	Addr, DatabaseURL string
-	Receivers         []ReceiverConfig
-	LiveMaxAge        time.Duration
+	Addr, DatabaseURL    string
+	WebUser, WebPassword string
+	WebTrustedProxies    string
+	Receivers            []ReceiverConfig
+	LiveMaxAge           time.Duration
 }
 
 type api struct {
@@ -31,6 +34,19 @@ type api struct {
 }
 
 func Run(ctx context.Context, cfg Config, assets fs.FS) error {
+	if (cfg.WebUser == "") != (cfg.WebPassword == "") || strings.ContainsAny(cfg.WebUser, ":\r\n") {
+		return errors.New("set ADSB_WEB_USER (without a colon) and ADSB_WEB_PASSWORD together")
+	}
+	trusted := make(map[netip.Addr]bool)
+	if value := strings.TrimSpace(cfg.WebTrustedProxies); value != "" {
+		for _, item := range strings.Split(value, ",") {
+			addr, err := netip.ParseAddr(strings.TrimSpace(item))
+			if err != nil || addr.Zone() != "" || addr.IsUnspecified() {
+				return errors.New("ADSB_WEB_TRUSTED_PROXIES must be a comma-separated list of proxy IP addresses")
+			}
+			trusted[addr.Unmap()] = true
+		}
+	}
 	startCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	db, err := pgxpool.New(startCtx, cfg.DatabaseURL)
@@ -63,7 +79,7 @@ func Run(ctx context.Context, cfg Config, assets fs.FS) error {
 	mux.Handle("GET /", http.FileServerFS(assets))
 
 	server := &http.Server{
-		Addr: cfg.Addr, Handler: mux, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second,
+		Addr: cfg.Addr, Handler: protectWeb(mux, cfg.WebUser, cfg.WebPassword, trusted), ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second,
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -221,7 +237,7 @@ func (a api) trails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := a.db.Query(r.Context(), `SELECT hex, lat, lon, alt_baro, on_ground,
-		flight, gs, track, position_at, position_at_approximate
+		flight, gs, track, position_at, position_at_approximate, (telemetry->>'baro_rate')::int
 		FROM position_points WHERE receiver_id = $1 AND position_at >= $2 AND position_at < $3
 		ORDER BY hex, position_at, event_id`, id, from, to)
 	if err != nil {
@@ -239,6 +255,7 @@ func (a api) trails(w http.ResponseWriter, r *http.Request) {
 		Track         *float64  `json:"track,omitempty"`
 		At            time.Time `json:"position_at"`
 		ApproximateAt bool      `json:"position_at_approximate,omitempty"`
+		BaroRate      *int      `json:"baro_rate,omitempty"`
 	}
 	type route struct {
 		Hex      string         `json:"hex"`
@@ -251,7 +268,7 @@ func (a api) trails(w http.ResponseWriter, r *http.Request) {
 		var hex string
 		var point routePoint
 		if err := rows.Scan(&hex, &point.Lat, &point.Lon, &point.Alt, &point.OnGround,
-			&point.Flight, &point.GroundSpeed, &point.Track, &point.At, &point.ApproximateAt); err != nil {
+			&point.Flight, &point.GroundSpeed, &point.Track, &point.At, &point.ApproximateAt, &point.BaroRate); err != nil {
 			dbError(w, err)
 			return
 		}

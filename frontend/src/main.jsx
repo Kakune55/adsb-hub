@@ -1,4 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { CoverageScatter, FlightCurves, ReplayControl } from './RadarAnalysis.jsx';
+import { inViewport, replayPositions, samplesForReplay, stationObservation } from './radarAnalysis.js';
 import { createRoot } from 'react-dom/client';
 import MapView from './MapView.jsx';
 import AircraftSearch from './AircraftSearch.jsx';
@@ -105,6 +107,12 @@ function App() {
   const [followKey, setFollowKey] = useState(null);
   const [pan, setPan] = useState(null);
   const [range, setRange] = useState(null);
+  const [replay, setReplay] = useState(null);
+  const [replayAt, setReplayAt] = useState(0);
+  const [coverage, setCoverage] = useState(false);
+  const [viewport, setViewport] = useState(null);
+  const [filter, setFilter] = useState({ viewport: false, ground: true, min: '', max: '' });
+  const [chartPoint, setChartPoint] = useState(null);
   const [clock, setClock] = useState(Date.now);
   const weatherAge = clock - Date.parse(metar?.reportTime);
   const mapMETAR = weatherAge >= -300000 && weatherAge <= 7200000 ? metar : null;
@@ -115,15 +123,42 @@ function App() {
   const live = useLiveStream(station?.id);
   const serverNow = live?.data && Date.parse(live.data.server_time) + Math.max(0, clock - live.receivedAt);
   const points = live?.data?.points.filter((p) => Date.parse(p.position_at) > serverNow - live.data.max_age_seconds * 1000) ?? emptyPoints;
-  const selectedPoint = selection?.historical ? null : points.find(({ hex }) => hex === selection?.hex);
+  const selectedPoint = replay || selection?.historical ? null : points.find(({ hex }) => hex === selection?.hex);
   const history = usePoll(station && range ? `trails?${new URLSearchParams({ receiver_id: station.id, from: range.from, to: range.to })}` : null, 0);
-  const focused = selectedPoint ?? selection;
+  const routes = history?.data?.routes ?? emptyPoints;
+  const replaying = replay && replay.receiverID === station?.id ? replay : null;
+  const replayPoints = useMemo(() => replaying ? replayPositions(replaying.routes, replayAt, replaying.receiverID) : emptyPoints, [replaying, replayAt]);
+  const mapPoints = (replaying ? replayPoints : points).filter((p) => {
+    const alt = p.on_ground ? 0 : p.alt_baro;
+    return (!filter.viewport || inViewport(p, viewport)) && (filter.ground || !p.on_ground) &&
+      (filter.min === '' || (alt != null && alt >= Number(filter.min))) &&
+      (filter.max === '' || (alt != null && alt <= Number(filter.max)));
+  });
+  const focused = replaying ? replayPoints.find((p) => p.hex === selection?.hex) ?? null : selectedPoint ?? selection;
   const referenceRoute = useReferenceRoute(focused?.flight);
-  const trackParams = station && selection && !selection.historical && { receiver_id: station.id, hex: selection.hex };
+  const trackParams = !replaying && station && selection && !selection.historical && { receiver_id: station.id, hex: selection.hex };
   const track = usePoll(trackParams ? `track?${new URLSearchParams(trackParams)}` : null, 4000, true);
   const trail = track?.data?.points ?? emptyPoints;
   const displayTrail = selectedPoint && (!trail.length || Date.parse(selectedPoint.position_at) > Date.parse(trail.at(-1).position_at))
     ? [...trail, selectedPoint] : trail;
+  const curvePoints = replaying ? replaying.routes.find(({ hex }) => hex === selection?.hex)?.curve ?? emptyPoints :
+    selection?.historical ? routes.find(({ hex }) => hex === selection.hex)?.segments.flat() ?? emptyPoints : displayTrail;
+
+  function startReplay(mode, source) {
+    const indexed = samplesForReplay(source).map((route) => ({ ...route, curve: route.samples.map(({ point }) => point) }));
+    if (!indexed.length) return;
+    const from = indexed.reduce((min, { samples }) => Math.min(min, samples[0].at), Infinity);
+    const to = indexed.reduce((max, { samples }) => Math.max(max, samples.at(-1).at), -Infinity);
+    if (to <= from) return;
+    setReplay({ mode, routes: indexed, from, to, receiverID: station.id });
+    setReplayAt(from);
+    setFollowKey(null); setSelectedAirport(null); setChartPoint(null);
+    if (mode === 'station') setSelection(null);
+  }
+
+  function stopReplay() {
+    setReplay(null); setSelection(null); setChartPoint(null);
+  }
 
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 1000);
@@ -135,13 +170,15 @@ function App() {
 
   function select(point, reposition, historical = false) {
     setSelectedAirport(null);
+    setChartPoint(null);
     const keepFollowing = !historical && followKey === `${point.receiver_id}/${point.hex}`;
     if (!keepFollowing) setFollowKey(null);
-    setSelection(historical ? { ...point, historical } : point);
+    setSelection(historical || replaying ? { ...point, historical: true } : point);
     if (reposition && !keepFollowing) setPan({ lat: point.lat, lon: point.lon });
   }
 
   function toggleFollow(point) {
+    if (replaying) return;
     setSelectedAirport(null);
     const key = `${point.receiver_id}/${point.hex}`;
     setSelection(point);
@@ -150,17 +187,20 @@ function App() {
 
   function selectAirport(airport, locate = false) {
     setSelectedAirport(airport);
+    setChartPoint(null);
     setFollowKey(null);
     if (locate) setPan({ lat: airport.lat, lon: airport.lon });
   }
 
   return <main className="radar">
     <section className="map-workspace" aria-label="地图工作区">
-      <MapView station={station} points={points} track={displayTrail} selectedHex={selection?.hex} lastKnown={selectedPoint ? null : selection}
-      pan={pan} historyTracks={history?.data?.routes ?? emptyPoints} onSelect={(point, historical) => select(point, false, historical)}
+      <MapView station={station} points={mapPoints} track={replaying ? emptyPoints : displayTrail} selectedHex={selection?.hex} lastKnown={replaying || selectedPoint ? null : selection}
+      pan={pan} historyTracks={replaying ? emptyPoints : routes} onSelect={(point, historical) => select(point, false, historical)}
       followKey={followKey} onFollow={toggleFollow} onStopFollowing={() => setFollowKey(null)} referenceRoute={referenceRoute}
-      airports={airports} onAirportSelect={selectAirport} airportRunways={airportDetails?.runways} selectedAirport={selectedAirport} airportMETAR={mapMETAR} />
-      <AircraftSearch stationID={station?.id} onPick={(match) => select(points.find(({ hex }) => hex === match.hex) ?? match, true)} />
+      airports={airports} onAirportSelect={selectAirport} airportRunways={airportDetails?.runways} selectedAirport={selectedAirport} airportMETAR={mapMETAR}
+      onViewport={setViewport} chartPoint={chartPoint} replaying={Boolean(replaying)} />
+      {replaying ? <ReplayControl replay={{ ...replaying, at: replayAt }} onTime={setReplayAt} onStop={stopReplay} /> :
+        <AircraftSearch stationID={station?.id} onPick={(match) => select(points.find(({ hex }) => hex === match.hex) ?? match, true)} />}
       <div className="altitude-legend" aria-label="气压高度色标，单位英尺">
         <span>高度 · ft</span><div style={{ background: altitudeGradient }} className="altitude-scale" />
         <div className="altitude-ticks"><span>0</span><span>10k</span><span>20k</span><span>30k</span><span>40k+</span></div>
@@ -169,19 +209,24 @@ function App() {
     <aside className="focus-panel" aria-label={selectedAirport ? '机场详情' : '飞机详情'}>
       <div className="radar-brand"><span className="brand-icon" aria-hidden="true" />ADS-B <b>Hub</b></div>
       {selectedAirport ? <AirportDetails airport={selectedAirport} receiver={station?.samples.receiver}
+        activity={points} onSelectAircraft={(point) => { if (replaying) stopReplay(); select(point, true); }}
         details={airportDetails} metar={metar} taf={taf} onShowRunways={() => setPan({ lat: selectedAirport.lat, lon: selectedAirport.lon, zoom: 12 })}
         onClose={() => setSelectedAirport(null)} /> : <AircraftDetails point={focused} following={Boolean(followKey)} isLive={Boolean(selectedPoint)}
         receiver={station?.samples.receiver} serverNow={serverNow}
         referenceRoute={referenceRoute} onLocateAirport={(airport) => selectAirport(airports.find((a) => a.icao === airport.icao) ?? airport, true)}
-        onFollow={followKey ? () => setFollowKey(null) : selectedPoint ? () => toggleFollow(selectedPoint) : null}
-        onClose={selection ? () => { setFollowKey(null); setSelection(null); } : null} />}
+        onFollow={replaying ? null : followKey ? () => setFollowKey(null) : selectedPoint ? () => toggleFollow(selectedPoint) : null}
+        onClose={selection ? () => { setFollowKey(null); setSelection(null); setChartPoint(null); } : null} />}
+      {!selectedAirport && selection && curvePoints.length > 0 && <>
+        {!replaying && curvePoints.length > 1 && <button className="primary follow-button" type="button" onClick={() => startReplay('single', [{ hex: selection.hex, segments: [curvePoints] }])}>单机回放</button>}
+        <FlightCurves key={`${selection.hex}/${replaying?.mode ?? 'live'}`} points={curvePoints} onSample={setChartPoint} />
+      </>}
       {!selectedAirport && track?.error && <p className="notice" role="status">航迹获取失败</p>}
     </aside>
     <aside className="radar-panel" aria-label="雷达站与附近飞机">
       <section className="station-panel">
         <div className="station-heading">
           <select aria-label="雷达站" value={station?.id ?? ''} onChange={(e) => {
-            setStationID(e.target.value); setFollowKey(null); setSelection(null); setSelectedAirport(null); setPan(null);
+            setStationID(e.target.value); stopReplay(); setCoverage(false); setFollowKey(null); setSelectedAirport(null); setPan(null);
           }}>
             {stations.length ? stations.map(({ id, name }) => <option key={id} value={id}>{name}</option>) : <option value="">雷达站</option>}
           </select>
@@ -195,18 +240,40 @@ function App() {
             ? `${station.samples.receiver.lat.toFixed(4)}, ${station.samples.receiver.lon.toFixed(4)}` : '—'}</dd></div>
         </dl>
       </section>
-      <TrafficTable points={points} receiver={station?.samples.receiver} serverNow={serverNow}
-        selectedHex={selection?.hex} error={live?.error} onSelect={(point) => select(point, true)} />
-      <TrailControl range={range} onRange={setRange} history={history} ready={Boolean(station)} />
+      <div className="traffic-workspace">
+        <details className="radar-filters"><summary>筛选</summary><div className="filter-fields">
+          <label><input type="checkbox" checked={filter.viewport} onChange={(e) => setFilter({ ...filter, viewport: e.target.checked })} />仅视野内</label>
+          <label><input type="checkbox" checked={filter.ground} onChange={(e) => setFilter({ ...filter, ground: e.target.checked })} />显示地面目标</label>
+          <label>最低高度 (ft)<input type="number" value={filter.min} onChange={(e) => setFilter({ ...filter, min: e.target.value })} /></label>
+          <label>最高高度 (ft)<input type="number" value={filter.max} onChange={(e) => setFilter({ ...filter, max: e.target.value })} /></label>
+        </div></details>
+        {coverage ? <CoverageScatter routes={routes} lat={station?.samples.receiver?.lat} lon={station?.samples.receiver?.lon}
+          duration={Date.parse(range?.to) - Date.parse(range?.from)} /> : <TrafficTable points={mapPoints} receiver={station?.samples.receiver} serverNow={replaying ? replayAt : serverNow} historical={Boolean(replaying)}
+          selectedHex={selection?.hex} error={!replaying && live?.error} onSelect={(point) => select(point, true, Boolean(replaying))} />}
+      </div>
+      <TrailControl range={range} onRange={(next) => { if (replaying) stopReplay(); if (!next) setCoverage(false); setRange(next); }} history={history} ready={Boolean(station)}
+        actions={<div className="analysis-actions">
+          <button className="analysis-button" type="button" disabled={!history?.data?.first_position_at || history.data.first_position_at === history.data.last_position_at} onClick={() => { setCoverage(false); startReplay('station', routes); }}>全站回放</button>
+          <button className="analysis-button" type="button" disabled={!station} aria-pressed={coverage} onClick={() => {
+            if (replaying) stopReplay();
+            if (!range) { const now = Date.now(); setRange({ minutes: 30, from: new Date(now - 1800000).toISOString(), to: new Date(now).toISOString() }); }
+            setCoverage(!coverage);
+          }}>覆盖散点图</button>
+        </div>} />
     </aside>
   </main>;
 }
 
-function AirportDetails({ airport, receiver, details, metar, taf, onShowRunways, onClose }) {
+function AirportDetails({ airport, receiver, details, metar, taf, onShowRunways, onClose, activity, onSelectAircraft }) {
   const kinds = { large_airport: '大型机场', medium_airport: '中型机场', small_airport: '小型机场' };
   const country = airport.country || airport.countryiso2;
   const metres = (ft) => ft > 0 ? measure(Math.round(ft * 0.3048), 'm') : null;
   const observation = parseMETAR(metar?.rawOb);
+  const nearby = activity.flatMap((point) => {
+    const distance = stationObservation(airport, point)?.distance;
+    const nearGround = point.on_ground || (airport.elevation_ft != null && point.alt_baro != null && Math.abs(point.alt_baro - airport.elevation_ft) <= 3000);
+    return distance != null && distance <= 15 && nearGround ? [{ point, distance }] : [];
+  }).sort((a, b) => a.distance - b.distance);
   const ceiling = observation.clouds.filter(({ amount, feet }) => feet != null && ['BKN', 'OVC', 'VV'].includes(amount));
   const cloudNames = { FEW: '少云', SCT: '疏云', BKN: '多云', OVC: '阴天', VV: '垂直能见度' };
   const weatherNames = { FG: '雾', BR: '轻雾', HZ: '霾', RA: '雨', SN: '雪', DZ: '毛毛雨', TS: '雷暴', TSRA: '雷雨', FZRA: '冻雨', SHRA: '阵雨' };
@@ -263,6 +330,12 @@ function AirportDetails({ airport, receiver, details, metar, taf, onShowRunways,
       </li>)}</ul>
       {details.runways.some(({ start, end, low, high }) => (start && low) || (end && high)) && <button type="button" className="primary follow-button" onClick={onShowRunways}>查看跑道地图</button>}
     </section>}
+    <section className="detail-section" aria-label="机场附近活动"><h2>附近活动 · 本地观测</h2>
+      {nearby.length ? <ul className="airport-data-list">{nearby.map(({ point, distance }) => <li key={point.hex}>
+        <button className="analysis-button" type="button" onClick={() => onSelectAircraft(point)}>{point.flight || point.hex}</button>
+        <span>{point.on_ground ? '地面' : measure(point.alt_baro, 'ft')} · {measure(distance, 'km')}</span>
+      </li>)}</ul> : <p className="analysis-caption">15 km 内暂无低空或地面目标</p>}
+    </section>
     {!!details?.frequencies.length && <section className="detail-section" aria-label="通信频率">
       <h2>通信频率 <a href="https://ourairports.com/data/" target="_blank" rel="noreferrer">OurAirports</a></h2>
       <ul className="airport-data-list">{details.frequencies.map(({ type, description, mhz }, i) => <li key={`${type}/${mhz}/${i}`}>
@@ -276,7 +349,7 @@ function sampleAge(point, serverNow) {
   return Number.isFinite(serverNow) ? Math.max(0, Math.floor((serverNow - Date.parse(point.position_at)) / 1000)) : null;
 }
 
-function TrafficTable({ points, receiver, serverNow, selectedHex, error, onSelect }) {
+function TrafficTable({ points, receiver, serverNow, selectedHex, error, onSelect, historical }) {
   const [sort, setSort] = useState({ key: 'distance', direction: 1 });
   const [airframes, setAirframes] = useState(() => new Map());
   const targets = useRef([]);
@@ -336,10 +409,11 @@ function TrafficTable({ points, receiver, serverNow, selectedHex, error, onSelec
     if (x == null || y == null) return Number(x == null) - Number(y == null) || a.call.localeCompare(b.call);
     return sort.direction * (typeof x === 'string' ? x.localeCompare(y) : x - y) || a.call.localeCompare(b.call);
   });
-  return <section className="traffic-panel" aria-label="附近飞机">
-    <div className="traffic-heading"><h2>附近飞机 <span>{points.length}</span></h2>{error && <small role="status">实时连接中断</small>}</div>
+  const title = historical ? '回放目标' : '附近飞机';
+  return <section className="traffic-panel" aria-label={title}>
+    <div className="traffic-heading"><h2>{title} <span>{points.length}</span></h2>{error && <small role="status">实时连接中断</small>}</div>
     <div className="aircraft-table">
-      <table aria-label="附近飞机">
+      <table aria-label={title}>
         <thead><tr>{columns.map(([key, label, unit]) => <th key={key} scope="col"
           aria-sort={sort.key === key ? (sort.direction > 0 ? 'ascending' : 'descending') : 'none'}>
           <button type="button" onClick={() => setSort({ key, direction: sort.key === key ? -sort.direction : 1 })}>

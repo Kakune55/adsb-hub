@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 const presets = [[30, '30 分钟'], [60, '1 小时'], [180, '3 小时'], [360, '6 小时'], [720, '12 小时'], [1440, '24 小时']];
 const coverageFormat = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
-export default function TrailControl({ range, onRange, history, ready }) {
+export default function TrailControl({ range, onRange, history, ready, actions }) {
   const [custom, setCustom] = useState(false);
   const [invalidRange, setInvalidRange] = useState(false);
   const data = history?.data;
@@ -45,5 +45,6 @@ export default function TrailControl({ range, onRange, history, ready }) {
       <button type="button" disabled={!ready} aria-expanded={custom} aria-pressed={custom || Boolean(range && !range.minutes)}
         onClick={() => { setCustom(!custom); setInvalidRange(false); }}>自选</button>
     </div>
+    {actions}
   </section>;
 }

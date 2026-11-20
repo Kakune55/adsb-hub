@@ -65,6 +65,9 @@ func runCollector(ctx context.Context) error {
 
 func runServer(ctx context.Context) error {
 	cfg := server.Config{Addr: env("ADSB_LISTEN", "127.0.0.1:8080"), DatabaseURL: os.Getenv("DATABASE_URL")}
+	cfg.WebUser = os.Getenv("ADSB_WEB_USER")
+	cfg.WebPassword = os.Getenv("ADSB_WEB_PASSWORD")
+	cfg.WebTrustedProxies = os.Getenv("ADSB_WEB_TRUSTED_PROXIES")
 	if cfg.DatabaseURL == "" {
 		return errors.New("set DATABASE_URL to the PostgreSQL connection URL")
 	}

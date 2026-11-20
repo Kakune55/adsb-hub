@@ -164,6 +164,30 @@ td button { padding: 0; border: 0; color: var(--blue); background: transparent; 
 .search-results button span, .search-results p { color: var(--muted); font-size: 12px; }
 .search-results p:not(:empty) { padding: 9px 12px; }
 
+.traffic-workspace { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.traffic-workspace .traffic-panel { flex: 1; }
+.traffic-workspace .traffic-heading { flex-shrink: 0; }
+.radar-filters { flex-shrink: 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.radar-filters summary { padding: 5px 12px; }
+.filter-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; padding: 0 12px 8px; }
+.filter-fields label { min-width: 0; }
+.filter-fields input[type=number] { display: block; width: 100%; padding: 2px 4px; }
+.filter-fields input[type=checkbox] { vertical-align: middle; margin-left: 0; }
+.analysis-actions { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px 9px; }
+.analysis-button, .replay-control select { padding: 3px 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: inherit; font-size: 11px; }
+.analysis-button:hover:not(:disabled), .analysis-button[aria-pressed=true] { background: var(--selected); }
+.replay-control { position: absolute; z-index: 2; top: var(--gutter); left: 50%; transform: translateX(-50%); width: min(410px, calc(100% - 24px)); padding: 8px 10px; background: var(--overlay); border: 1px solid var(--line); border-radius: 5px; }
+.replay-control strong { color: var(--blue); }
+.replay-control time { margin-left: 8px; font: 11px var(--mono); }
+.replay-control input, .flight-curves input { display: block; width: calc(100% - 18px); margin: 3px 9px; accent-color: var(--blue); }
+.replay-control .analysis-actions { padding: 4px 0 0; }
+.flight-curves svg { display: block; width: 100%; color: var(--blue); }
+.coverage-scatter canvas { display: block; width: min(100%, 360px); height: auto; margin-inline: auto; pointer-events: none; }
+.analysis-grid { fill: none; stroke: var(--line); stroke-width: 1; }
+.curve-line { fill: none; stroke: currentColor; stroke-width: 1.5; }
+.curve-gap { stroke-dasharray: 3 3; opacity: .55; }
+.analysis-caption { padding: 4px 9px 8px; color: var(--muted); font-size: 11px; }
+
 @media (max-width: 860px) {
   .radar { --gutter: 8px; height: auto; min-height: 100dvh; grid-template-columns: minmax(0, 1fr); grid-template-areas: 'map' 'traffic' 'detail'; }
   .map-workspace { height: 58dvh; min-height: 290px; }
